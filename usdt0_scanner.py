@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-USDT0 Price Scanner for Hyperliquid
+Stablecoin Price Scanner for Hyperliquid
 
-This script monitors the price of USDT0 stablecoin on Hyperliquid and sends
-a Discord webhook notification when the price goes below 0.998.
+This script monitors the prices of multiple stablecoins on Hyperliquid (USDT0, FEUSD, USDE)
+and sends Discord webhook notifications when their prices fall below specific thresholds.
 """
 
 import requests
@@ -13,20 +13,34 @@ from datetime import datetime
 # Configuration
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1376603069088792596/75DqqA-d3V2_6tvi-GC7sdnY8bIt-zo5xIQKbeeQPdjqEPdCz0i7fB941YBOLzUXdFSB"
-PRICE_THRESHOLD = 0.998
 CHECK_INTERVAL = 60  # seconds
+ALERT_COOLDOWN = 900  # 15 minutes in seconds
 
-# Identified stablecoin indices from API analysis
-USDTO_INDEX = "166"  # USDT0/USDC price: ~0.9992
-FEUSD_INDEX = "153"  # FEUSD/USDC price: ~0.99668
-USDE_INDEX = "150"   # USDE/USDC price: ~1.00065
+# Stablecoin configuration
+STABLECOINS = {
+    "USDT0": {
+        "index": "166",    # USDT0/USDC price: ~0.9992
+        "threshold": 0.998,
+        "last_alert": 0     # Timestamp of the last alert
+    },
+    "FEUSD": {
+        "index": "153",    # FEUSD/USDC price: ~0.99668
+        "threshold": 0.985,
+        "last_alert": 0
+    },
+    "USDE": {
+        "index": "150",    # USDE/USDC price: ~1.00065
+        "threshold": 0.99,
+        "last_alert": 0
+    }
+}
 
-def get_usdt0_price():
+def get_stablecoin_prices():
     """
-    Fetch the current price of USDT0 from Hyperliquid API.
+    Fetch the current prices of all monitored stablecoins from Hyperliquid API.
     
     Returns:
-        float: Current price of USDT0 or None if an error occurs
+        dict: Dictionary of stablecoin names and their current prices
     """
     try:
         # Get prices from allMids endpoint
@@ -37,76 +51,93 @@ def get_usdt0_price():
         response.raise_for_status()
         data = response.json()
         
-        # Try to get USDT0 price using the identified index
-        usdt0_key = f"@{USDTO_INDEX}"
-        if usdt0_key in data:
-            price = float(data[usdt0_key])
-            print(f"USDT0 price: {price}")
-            return price
+        # Get prices for all configured stablecoins
+        prices = {}
+        for coin_name, coin_data in STABLECOINS.items():
+            coin_key = f"@{coin_data['index']}"
+            if coin_key in data:
+                price = float(data[coin_key])
+                prices[coin_name] = price
+                print(f"{coin_name} price: {price}")
+            else:
+                print(f"{coin_name} price not found at index {coin_key}")
         
-        # If not found, print an error and return None
-        print(f"USDT0 price not found at index {usdt0_key} or by name")
-        
-        # Debug: print some nearby stablecoin prices if available
-        feusd_key = f"@{FEUSD_INDEX}"
-        usde_key = f"@{USDE_INDEX}"
-        if feusd_key in data:
-            print(f"FEUSD price at {feusd_key}: {data[feusd_key]}")
-        if usde_key in data:
-            print(f"USDE price at {usde_key}: {data[usde_key]}")
-            
-        return None
+        return prices
     
     except Exception as e:
-        print(f"Error fetching USDT0 price: {e}")
-        return None
+        print(f"Error fetching stablecoin prices: {e}")
+        return {}
 
-def send_discord_alert(current_price):
+def send_discord_alert(coin_name, current_price, threshold):
     """
-    Send an alert to Discord webhook when USDT0 price is below threshold.
+    Send an alert to Discord webhook when a stablecoin's price is below threshold.
     
     Args:
-        current_price (float): The current price of USDT0
+        coin_name (str): The name of the stablecoin
+        current_price (float): The current price of the stablecoin
+        threshold (float): The threshold that was crossed
     
     Returns:
         bool: True if alert was sent successfully, False otherwise
     """
     try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        role_tag = "<@&1333036584760774666>"  # Role ID format to tag in Discord
         message = {
-            "content": f"Price of USDT0 below {PRICE_THRESHOLD}\nCurrent price: {current_price}"
+            "content": f"{role_tag} ⚠️ ALERT: {coin_name} Depeg Detected ⚠️\n" +
+                      f"Price of {coin_name} below {threshold}\n" +
+                      f"Current price: {current_price}\n" +
+                      f"Time: {timestamp}"
         }
         
         response = requests.post(DISCORD_WEBHOOK_URL, json=message)
         response.raise_for_status()
         
-        print(f"Discord alert sent successfully. USDT0 price: {current_price}")
+        print(f"Discord alert sent successfully. {coin_name} price: {current_price}")
         return True
     
     except Exception as e:
         print(f"Error sending Discord alert: {e}")
         return False
 
+def check_for_depegs(prices):
+    """
+    Check if any stablecoin prices are below their thresholds and send alerts if needed.
+    
+    Args:
+        prices (dict): Dictionary of stablecoin names and their current prices
+    """
+    current_time = time.time()
+    
+    for coin_name, price in prices.items():
+        coin_data = STABLECOINS[coin_name]
+        threshold = coin_data["threshold"]
+        last_alert = coin_data["last_alert"]
+        
+        # Check if price is below threshold and cooldown period has passed
+        if price < threshold and (current_time - last_alert) > ALERT_COOLDOWN:
+            print(f"{coin_name} price {price} is below threshold {threshold}. Sending alert...")
+            if send_discord_alert(coin_name, price, threshold):
+                # Update the last alert timestamp
+                STABLECOINS[coin_name]["last_alert"] = current_time
+
 def main():
     """
-    Main function to periodically check USDT0 price and send alerts if needed.
+    Main function to periodically check stablecoin prices and send alerts if needed.
     """
-    print("USDT0 price scanner started")
-    
-    last_alert_time = 0
-    alert_cooldown = 300  # 5 minutes cooldown between alerts
+    print("Stablecoin price scanner started")
+    print(f"Monitoring: {', '.join(STABLECOINS.keys())}")
+    print(f"Check interval: {CHECK_INTERVAL} seconds")
+    print(f"Alert cooldown: {ALERT_COOLDOWN} seconds (15 minutes)")
     
     while True:
         try:
-            current_price = get_usdt0_price()
+            # Get current prices for all stablecoins
+            prices = get_stablecoin_prices()
             
-            if current_price is not None:
-                print(f"Current USDT0 price: {current_price}")
-                
-                # Check if price is below threshold and cooldown period has passed
-                current_time = time.time()
-                if current_price < PRICE_THRESHOLD and (current_time - last_alert_time) > alert_cooldown:
-                    if send_discord_alert(current_price):
-                        last_alert_time = current_time
+            if prices:
+                # Check for depegs and send alerts if needed
+                check_for_depegs(prices)
             
             # Wait for the next check interval
             time.sleep(CHECK_INTERVAL)
